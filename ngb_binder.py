@@ -2,192 +2,192 @@
 """
 Bind National Geographic JPG scans into a single PDF file.
 
-Usage modes:
+Usage:
 
-1. Convert *all issues* under a root directory:
-   ./ngb_binder.py --all ROOT --output OUTPUTDIR --jobs N
+  # Batch process all folders recursively under the given path
+  new_ngb_binder.py --all "/path/to/root" --output /path/to/output --jobs 4
 
-2. Convert a *specific folder* with JPGs (skip discovery):
-   ./ngb_binder.py --dir /exact/path/to/folder --output OUTPUTDIR
+  # Convert a single issue by date (matches folder with prefix)
+  new_ngb_binder.py "/path/to/root" 199408
 
-3. Convert a *single issue* by date from a root folder:
-   ./ngb_binder.py ROOT YYYYMM --output OUTPUTDIR
+  # Convert a single folder regardless of name
+  new_ngb_binder.py --dir "/path/to/exact/folder"
 
-Notes:
-- .pdf.chk files are used as checkpoints to avoid corrupt output.
-- Extra (non-standard) JPGs in each issue folder are added after core pages.
-- Folders that don't match the YYYYMM pattern are skipped.
-- Existing PDFs are not re-generated.
-
-Status codes:
-✅ = Converted, ⏭️ = Skipped, 🟦 = Already exists, ❌ = Failed
+Arguments:
+  --all ROOT            Root path to scan recursively for candidate folders
+  --output OUTPUTDIR    Output directory for PDFs (default: current directory)
+  --jobs JOBS           Number of parallel threads (default: 1)
+  --dir DIR             Convert a specific folder (no pattern matching)
+  src                   Root path for single-issue mode
+  yyyymm                Issue identifier (e.g., 199408)
 """
 
 import os
-import sys
-import argparse
 import re
+import sys
 import time
+import argparse
 from pathlib import Path
 from PIL import Image
-from multiprocessing import Pool
-
-SYMBOLS = {
-    'converted': '✅',
-    'skipped': '⏭️',
-    'exists': '🟦',
-    'failed': '❌'
-}
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def extract_yyyymm(foldername):
     match = re.search(r'(\d{6})', os.path.basename(foldername))
     return match.group(1) if match else None
 
 def fast_find_dirs(root):
-    found = []
-    stack = [root]
-    while stack:
-        current = stack.pop()
-        found.append(current)
-        try:
-            with os.scandir(current) as entries:
-                for entry in entries:
-                    if entry.is_dir():
-                        stack.append(entry.path)
-        except PermissionError:
-            continue
-    return found
+    found_dirs = []
+    for entry in os.scandir(root):
+        if entry.is_dir():
+            found_dirs.append(entry.path)
+            found_dirs.extend(fast_find_dirs(entry.path))
+    return found_dirs
 
-def get_jpg_files(folder, yyyymm):
-    core_pattern = re.compile(rf'^NGM_{yyyymm[:4]}_{yyyymm[4:6]}_[0-9]{{3}}[A-Z]?_[0-9]\.jpg$', re.IGNORECASE)
-    page_files, extra_files = [], []
+def is_valid_folder(folder):
     try:
-        for file in sorted(os.listdir(folder)):
-            full = os.path.join(folder, file)
-            if not os.path.isfile(full):
-                continue
-            if file.lower().endswith(".jpg"):
-                (page_files if core_pattern.match(file) else extra_files).append(full)
+        return any(f.name.lower().endswith(".jpg") for f in Path(folder).iterdir())
     except Exception:
-        return [], []
-    return page_files + extra_files, yyyymm
+        return False
 
-def build_pdf(jpgs, output_path, temp_path):
-    images = []
-    for jpg in jpgs:
+def get_jpg_files(folder, yyyymm=None):
+    folder = Path(folder)
+    jpgs = sorted([f for f in folder.iterdir() if f.is_file() and f.suffix.lower() == ".jpg"])
+    page_files = []
+    extra_files = []
+    for f in jpgs:
+        name = f.name
+        if name.startswith("NGM_"):
+            page_files.append(str(f))
+        else:
+            extra_files.append(str(f))
+    return page_files + extra_files
+
+def build_pdf(jpg_list, output_path, fail_log=None):
+    temp_output = output_path + ".chk"
+    image_list = []
+    failed_files = []
+    for f in jpg_list:
         try:
-            img = Image.open(jpg).convert("RGB")
-            images.append(img)
+            img = Image.open(f).convert("RGB")
+            image_list.append(img)
         except:
-            continue
-    if not images:
-        return False
-    try:
-        os.makedirs(os.path.dirname(temp_path), exist_ok=True)
-        images[0].save(temp_path, save_all=True, append_images=images[1:], format="PDF")
-        os.rename(temp_path, output_path)
-        return True
-    except Exception:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        return False
-
-def process_folder(args):
-    index, total, folder, output_dir = args
-    folder_name = os.path.basename(folder)
-    yyyymm = extract_yyyymm(folder)
-    if not yyyymm:
-        return index, total, folder_name, 'skipped'
-
-    output_pdf = os.path.join(output_dir, f'NGM_{yyyymm}.pdf')
-    temp_pdf = output_pdf + ".chk"
-
-    if os.path.exists(output_pdf):
-        return index, total, folder_name, 'exists'
-
-    jpgs, _ = get_jpg_files(folder, yyyymm)
-    if not jpgs:
-        return index, total, folder_name, 'skipped'
-
-    success = build_pdf(jpgs, output_pdf, temp_pdf)
-    return index, total, folder_name, 'converted' if success else 'failed'
+            failed_files.append(f)
+    if image_list:
+        os.makedirs(os.path.dirname(temp_output), exist_ok=True)
+        try:
+            image_list[0].save(temp_output, save_all=True, append_images=image_list[1:], format="PDF")
+            os.rename(temp_output, output_path)
+        except Exception as e:
+            failed_files.append(f"WRITE_ERROR: {e}")
+            if os.path.exists(temp_output):
+                os.remove(temp_output)
+    if fail_log and failed_files:
+        with open(fail_log, "a") as f:
+            for path in failed_files:
+                f.write(path + "\n")
+    return failed_files
 
 def print_status(index, total, folder, status):
-    print(f"Processed {index + 1}/{total} - [{folder}] - Status: {SYMBOLS[status]}")
+    print(f"Processed {index}/{total} - [{os.path.basename(folder)}] - Status: {status}")
 
-def run_batch(root, output_dir, jobs):
-    start = time.time()
-    print(f"Scanning directory tree under '{root}'... please wait")
-    all_dirs = [d for d in fast_find_dirs(root) if os.path.isdir(d)]
-    print(f"Found {len(all_dirs)} folders in {time.time() - start:.2f} seconds.\n")
-
-    args_list = [(i, len(all_dirs), folder, output_dir) for i, folder in enumerate(all_dirs)]
-    if jobs == 1:
-        for args in args_list:
-            res = process_folder(args)
-            print_status(*res)
-    else:
-        with Pool(processes=jobs) as pool:
-            for res in pool.imap_unordered(process_folder, args_list):
-                print_status(*res)
-
-def run_by_dir(folder, output_dir):
-    folder = os.path.abspath(folder)
+def process_folder(index, total, folder, output_dir, fail_log):
     yyyymm = extract_yyyymm(folder)
     if not yyyymm:
-        print(f"❌ Error: Folder name does not contain YYYYMM: {folder}")
+        print_status(index, total, folder, "⏭️ Skipped")
         return
-    jpgs, _ = get_jpg_files(folder, yyyymm)
-    if not jpgs:
-        print(f"❌ Error: No JPG files found in {folder}")
-        return
-    output_pdf = os.path.join(output_dir, f'NGM_{yyyymm}.pdf')
-    temp_pdf = output_pdf + ".chk"
-    if os.path.exists(output_pdf):
-        print(f"🟦 Exists: {output_pdf}")
-        return
-    if build_pdf(jpgs, output_pdf, temp_pdf):
-        print(f"✅ Created: {output_pdf}")
-    else:
-        print(f"❌ Failed: {output_pdf}")
+    output_file = f"NGM_{yyyymm}.pdf"
+    output_path = os.path.join(output_dir, output_file)
 
-def run_by_date(root, yyyymm, output_dir):
-    matches = []
-    for dirpath, dirnames, _ in os.walk(root):
-        for d in dirnames:
-            if d.startswith(yyyymm):
-                matches.append(os.path.join(dirpath, d))
-    if not matches:
-        print(f"❌ No folder found for issue {yyyymm}")
+    if os.path.exists(output_path):
+        print_status(index, total, folder, "🟦 Existing")
         return
-    if len(matches) > 1:
-        print("Multiple matches found:")
-        for i, path in enumerate(matches):
-            print(f"{i + 1}: {path}")
-        sel = int(input("Select one: ")) - 1
-        folder = matches[sel]
-    else:
-        folder = matches[0]
-    run_by_dir(folder, output_dir)
+    if os.path.exists(output_path + ".chk"):
+        os.remove(output_path + ".chk")
+
+    jpgs = get_jpg_files(folder, yyyymm)
+    if not jpgs:
+        print_status(index, total, folder, "⏭️ Skipped")
+        return
+
+    failed = build_pdf(jpgs, output_path, fail_log=fail_log)
+    print_status(index, total, folder, "❌ Failed" if failed else "✅ Converted")
+
+def run_batch(root, output_dir, jobs):
+    print(f"Scanning directory tree under '{root}'... please wait")
+    start = time.time()
+    candidates = fast_find_dirs(root)
+    duration = time.time() - start
+    print(f"Found {len(candidates)} folders in {duration:.2f} seconds.\n")
+
+    folders = [f for f in candidates if is_valid_folder(f)]
+    total = len(folders)
+    fail_log = os.path.join(output_dir, "failed.log")
+    if os.path.exists(fail_log):
+        os.remove(fail_log)
+
+    with ThreadPoolExecutor(max_workers=jobs or 1) as executor:
+        futures = {
+            executor.submit(process_folder, i+1, total, folder, output_dir, fail_log): folder
+            for i, folder in enumerate(folders)
+        }
+        for future in as_completed(futures):
+            _ = future.result()
+
+def process_single_folder(folder, output_dir):
+    yyyymm = extract_yyyymm(folder)
+    if not yyyymm:
+        print(f"Cannot extract YYYYMM from folder name: {folder}")
+        return
+    output_file = f"NGM_{yyyymm}.pdf"
+    output_path = os.path.join(output_dir, output_file)
+    fail_log = os.path.join(output_dir, "failed.log")
+    if os.path.exists(fail_log):
+        os.remove(fail_log)
+    jpgs = get_jpg_files(folder, yyyymm)
+    failed = build_pdf(jpgs, output_path, fail_log=fail_log)
+    print("✅ Done" if not failed else "❌ Failed (see failed.log)")
 
 def main():
     parser = argparse.ArgumentParser(description="Bind National Geographic JPG scans into a single PDF.")
-    parser.add_argument("--all", action="store_true", help="Convert all valid subfolders under ROOT")
-    parser.add_argument("--output", metavar="OUTPUTDIR", default=os.getcwd(), help="Output directory for PDFs")
-    parser.add_argument("--jobs", type=int, default=1, help="Number of parallel jobs to run (default: 1)")
-    parser.add_argument("--dir", metavar="DIR", help="Exact folder to bind (no discovery)")
-    parser.add_argument("src", nargs="?", help="Root directory to search for specific issue")
-    parser.add_argument("yyyymm", nargs="?", help="Issue date in YYYYMM format")
+    parser.add_argument("--all", action="store_true", help="Batch convert all folders under root")
+    parser.add_argument("--output", metavar="OUTPUTDIR", default=os.getcwd(), help="Output directory")
+    parser.add_argument("--jobs", type=int, default=1, help="Number of threads for parallel processing")
+    parser.add_argument("--dir", metavar="DIR", help="Exact folder path to convert")
+    parser.add_argument("src", nargs="?", help="Root path (for --all or date mode)")
+    parser.add_argument("yyyymm", nargs="?", help="Date-based folder search (e.g. 199408)")
     args = parser.parse_args()
 
-    if args.all and args.src:
+    if args.all:
+        if not args.src:
+            print("Error: --all requires a source root path.")
+            sys.exit(1)
         run_batch(args.src, args.output, args.jobs)
-    elif args.dir:
-        run_by_dir(args.dir, args.output)
-    elif args.src and args.yyyymm:
-        run_by_date(args.src, args.yyyymm, args.output)
-    else:
-        parser.print_help()
+        return
+
+    if args.dir:
+        process_single_folder(args.dir, args.output)
+        return
+
+    if args.src and args.yyyymm:
+        print(f"Looking for issue folder starting with {args.yyyymm}...")
+        candidates = [
+            str(p) for p in Path(args.src).rglob(f"{args.yyyymm}*")
+            if p.is_dir()
+        ]
+        if not candidates:
+            print("No matching folders found.")
+            return
+        if len(candidates) == 1:
+            folder = candidates[0]
+        else:
+            for i, path in enumerate(candidates):
+                print(f"{i+1}: {path}")
+            choice = int(input("Select folder number: "))
+            folder = candidates[choice - 1]
+        process_single_folder(folder, args.output)
+        return
+
+    parser.print_help()
 
 if __name__ == "__main__":
     main()
