@@ -34,7 +34,7 @@ python3 new_ngb_binder.py [OPTIONS]
 
 ### Batch process all folders (multi-threaded)
 ```bash
-python3 new_ngb_binder.py --all ROOTDIR --output OUTPUTDIR --jobs 12
+python3 new_ngb_binder.py --all ROOTDIR --output OUTPUTDIR --jobs 4
 ```
 
 ### Convert only a specific folder (exact path)
@@ -86,7 +86,7 @@ python3 new_ngb_binder.py ROOTDIR 200312 --output OUTPUTDIR
 ## Example
 
 ```bash
-python3 new_ngb_binder.py --all "The Complete National Geographic 1888-2010-JPGs" --output ./NGM_PDFs --jobs 8
+python3 new_ngb_binder.py --all "/path/to/NGM/images" --output ./NGM_PDFs --jobs 8
 ```
 
 
