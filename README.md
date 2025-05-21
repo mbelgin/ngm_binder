@@ -97,7 +97,7 @@ Prints debug messages and failure reasons directly to the terminal (instead of r
 - Convert one non-standard folder:
 
 ```bash
-./ngb_binder.py --dir /mnt/data/NGM_Archive/CNG_MISC_DISC3/1998_extras
+./ngb_binder.py --dir /path/to/NGM_Archive/Some_Special_Issue
 ```
 
 ---
