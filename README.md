@@ -85,13 +85,13 @@ Prints debug messages and failure reasons directly to the terminal (instead of r
 - Convert all issues with OCR and delete CNGs after processing:
 
 ```bash
-./ngb_binder.py --all /mnt/data/NGM_Archive --output /mnt/data/NGM_PDFs --ocr --remove --jobs 4
+./ngb_binder.py --all /path/to/NGM_Archive --output /path/to/NGM_PDFs --ocr --remove --jobs 4
 ```
 
 - Convert one specific issue:
 
 ```bash
-./ngb_binder.py /mnt/data/NGM_Archive 199805 --output /mnt/data/NGM_PDFs
+./ngb_binder.py /path/to/NGM_Archive 199805 --output /path/to/NGM_PDFs
 ```
 
 - Convert one non-standard folder:
